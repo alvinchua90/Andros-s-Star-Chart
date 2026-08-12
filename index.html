@@ -86,6 +86,8 @@
   .night-mode h1.title{ color:#FFE9C7; }
   .subdate{ text-align:center; color:var(--ink-soft); font-weight:700; font-size:13px; margin-bottom:14px; }
   .night-mode .subdate{ color:#B9B3E8; }
+  .sync-badge{ text-align:center; font-size:11px; font-weight:800; color:#5A8F72; background:rgba(141,231,199,0.35); width:fit-content; padding:3px 10px; border-radius:999px; margin:-6px auto 14px; }
+  .night-mode .sync-badge{ color:#D8F5E8; background:rgba(141,231,199,0.16); }
 
   /* ---------- progress card ---------- */
   .progress-card{
@@ -199,10 +201,13 @@
 <body>
 <div id="app"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 /* =========================================================
    ANDROS'S STAR DAY — standalone, deployable, no build step
-   Data persists in the browser via localStorage.
+   Data persists in the browser via localStorage, and — if you
+   fill in SUPABASE_CONFIG below — also syncs in real time
+   across every phone via a free Supabase (Postgres) database.
    ========================================================= */
 
 const STORAGE_PREFIX = "androsStar:";
@@ -257,11 +262,96 @@ function loadLog(key){
     return raw ? JSON.parse(raw) : { tasks:{}, order:[], quote:null };
   }catch(e){ return { tasks:{}, order:[], quote:null }; }
 }
-function saveLog(key, log){
+function saveLogLocal(key, log){
   try{ localStorage.setItem(STORAGE_PREFIX+"log:"+key, JSON.stringify(log)); }catch(e){ /* storage full or blocked */ }
 }
 function isMuted(){ return localStorage.getItem(STORAGE_PREFIX+"muted") === "1"; }
 function setMuted(v){ localStorage.setItem(STORAGE_PREFIX+"muted", v ? "1":"0"); }
+
+/* ---------- ☁️ optional cloud sync ----------
+   To sync stars across phones in real time, create a free
+   Supabase project (supabase.com), add the table from the
+   README/SQL snippet, then paste your project URL and anon
+   key below. Leave the placeholders as-is to keep using this
+   device's local storage only — nothing else needs to change.
+*/
+const SUPABASE_CONFIG = {
+  url: "https://ndhiamaevcaejpkaqtpk.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5kaGlhbWFldmNhZWpwa2FxdHBrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY1MjEzODMsImV4cCI6MjEwMjA5NzM4M30.43fLS-yDBkhQy7S1FuxuSrmRWUwYthrzP1mDxDhvCYU",
+};
+const CLOUD_TABLE = "andros_star_logs";
+let db = null;
+let cloudEnabled = false;
+
+function initCloud(){
+  const looksConfigured = SUPABASE_CONFIG.url && SUPABASE_CONFIG.url.indexOf("PASTE_") !== 0;
+  if(looksConfigured && window.supabase){
+    try{
+      db = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+      cloudEnabled = true;
+    }catch(e){ console.warn("Cloud sync unavailable, using local storage only.", e); }
+  }
+}
+function rowToLog(row){
+  return { tasks: row.tasks||{}, order: row.task_order||[], quote: row.quote||null };
+}
+function persistLog(key, logObj){
+  saveLogLocal(key, logObj);
+  if(cloudEnabled){
+    db.from(CLOUD_TABLE).upsert({
+      date: key,
+      tasks: logObj.tasks,
+      task_order: logObj.order,
+      quote: logObj.quote,
+      updated_at: new Date().toISOString(),
+    }).then(({error})=>{
+      if(error){ console.warn(error); showToast("Could not sync to cloud — saved on this device"); }
+    });
+  }
+}
+function subscribeToday(){
+  if(!cloudEnabled) return;
+  // fetch whatever's already saved for today (e.g. Mummy tapped stars before this phone opened the app)
+  db.from(CLOUD_TABLE).select("*").eq("date", todayKey).maybeSingle().then(({data})=>{
+    if(data){
+      log = rowToLog(data);
+      saveLogLocal(todayKey, log);
+      render();
+    }
+  });
+  // then listen for live changes from other phones
+  db.channel("andros-log-"+todayKey)
+    .on("postgres_changes", { event:"*", schema:"public", table:CLOUD_TABLE, filter:`date=eq.${todayKey}` }, payload=>{
+      if(payload.new){
+        log = rowToLog(payload.new);
+        saveLogLocal(todayKey, log);
+        render();
+      }
+    })
+    .subscribe();
+}
+async function refreshHistoryFromCloud(){
+  if(!cloudEnabled) return;
+  const days = [];
+  for(let i=1;i<=7;i++){ const d=new Date(today); d.setDate(d.getDate()-i); days.push(d); }
+  const keys = days.map(d=> dateKey(d));
+  const { data, error } = await db.from(CLOUD_TABLE).select("date,tasks").in("date", keys);
+  const byKey = {};
+  if(!error && data){ data.forEach(row=>{ byKey[row.date] = row; }); }
+  const results = days.map(d=>{
+    const key = dateKey(d);
+    const row = byKey[key];
+    if(row){
+      const done = Object.values(row.tasks||{}).filter(Boolean).length;
+      return { date:d, done, total:7 };
+    }
+    const l = loadLog(key);
+    const done = Object.values(l.tasks||{}).filter(Boolean).length;
+    return { date:d, done, total:7 };
+  });
+  historyCache = results.reverse();
+  render();
+}
 
 /* ---------- sound (tiny synth, no assets) ---------- */
 let audioCtx = null;
@@ -322,7 +412,7 @@ let justPopped = null;
 
 function isAllDone(){ return tasks.every(t => log.tasks[t.id]); }
 
-function last7Days(){
+function computeLocalHistory(){
   const out = [];
   for(let i=1;i<=7;i++){
     const d = new Date(today); d.setDate(d.getDate()-i);
@@ -332,6 +422,7 @@ function last7Days(){
   }
   return out.reverse();
 }
+let historyCache = computeLocalHistory();
 function currentStreak(hist){
   let s = isAllDone() ? 1 : 0;
   for(let i=hist.length-1;i>=0;i--){ if(hist[i].done===hist[i].total) s++; else break; }
@@ -342,7 +433,7 @@ function currentStreak(hist){
 function render(){
   document.body.classList.toggle("night-mode", viewNight);
   const app = document.getElementById("app");
-  const hist = last7Days();
+  const hist = historyCache;
   const streak = currentStreak(hist);
   const doneCount = tasks.filter(t=>log.tasks[t.id]).length;
 
@@ -371,6 +462,7 @@ function render(){
 
     <h1 class="title">${viewNight ? "Good Night, Andros" : "Andros's Day"}</h1>
     <div class="subdate">${viewNight ? `All ${tasks.length} stars earned today` : niceDate(today)}</div>
+    ${cloudEnabled ? `<div class="sync-badge">☁️ Synced with Mummy</div>` : ``}
 
     ${viewNight ? renderNight(streak) : renderDay(doneCount, hist, streak)}
   `;
@@ -488,7 +580,7 @@ function attachHandlers(){
   if(resetBtn) resetBtn.onclick = ()=>{
     if(confirm("Reset all of today's stars?")){
       log = { tasks:{}, order:[], quote:null };
-      saveLog(todayKey, log);
+      persistLog(todayKey, log);
       viewNight = false;
       render();
       showToast("Today's stars have been reset");
@@ -525,7 +617,7 @@ function toggleTask(id, evt){
 
   if(isAllDone() && !log.quote){
     log.quote = QUOTES[Math.floor(Math.random()*QUOTES.length)];
-    saveLog(todayKey, log);
+    persistLog(todayKey, log);
     render();
     setTimeout(()=>{
       burstConfetti(window.innerWidth/2, window.innerHeight*0.35, 40);
@@ -537,12 +629,17 @@ function toggleTask(id, evt){
   }
   if(!isAllDone() && log.quote){ log.quote = null; }
 
-  saveLog(todayKey, log);
+  persistLog(todayKey, log);
   render();
   setTimeout(()=> justPopped=null, 500);
 }
 
+initCloud();
 render();
+if(cloudEnabled){
+  subscribeToday();
+  refreshHistoryFromCloud();
+}
 </script>
 </body>
 </html>
