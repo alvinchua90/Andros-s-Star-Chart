@@ -55,6 +55,20 @@
   .icon-btn:active{transform:scale(0.88);}
   .night-mode .icon-btn{ background:rgba(255,255,255,0.14); }
 
+  /* ---------- photo ---------- */
+  .photo-frame{
+    width:96px; height:96px; border-radius:50%; margin:0 auto 10px;
+    padding:4px; background:linear-gradient(135deg, var(--coral), var(--sun), var(--lavender));
+    animation:bob 4s ease-in-out infinite; position:relative;
+  }
+  .photo-frame img{ width:100%; height:100%; border-radius:50%; object-fit:cover; display:block; background:#fff; }
+  .photo-fallback{
+    width:100%; height:100%; border-radius:50%; background:#fff; display:none; align-items:center; justify-content:center; font-size:36px;
+  }
+  .night-mode .photo-frame{ padding:4px; background:linear-gradient(135deg, var(--lavender), var(--star-gold)); }
+  .photo-caption{ text-align:center; font-weight:800; font-size:11px; color:var(--ink-soft); letter-spacing:.5px; margin:-4px 0 10px; }
+  .night-mode .photo-caption{ color:#C9C4F2; }
+
   /* ---------- mascot ---------- */
   .mascot-wrap{ display:flex; flex-direction:column; align-items:center; margin-bottom:6px; }
   .mascot{
@@ -352,6 +366,12 @@ function render(){
       <div></div>
       <button class="icon-btn" id="resetBtn" title="Fix today's stars">↺</button>
     </div>
+
+    <div class="photo-frame">
+      <img src="andros.jpg" alt="Andros" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+      <div class="photo-fallback">🧒</div>
+    </div>
+    <div class="photo-caption">${viewNight ? "SLEEP TIGHT" : "TODAY'S HERO"}</div>
 
     <div class="mascot-wrap">
       <div class="mascot">
